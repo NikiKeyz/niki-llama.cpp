@@ -230,11 +230,11 @@ static const char * cu_get_error_str(CUresult err) {
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 #    define CUDA_SET_SHARED_MEMORY_LIMIT(kernel, nbytes)                                                       \
         do {                                                                                                   \
-            static bool shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = { false };                         \
+            static size_t shared_memory_limit_raised[GGML_CUDA_MAX_DEVICES] = { 0 };                           \
             const int   id                                                = ggml_cuda_get_device();            \
-            if (!shared_memory_limit_raised[id]) {                                                             \
+            if ((size_t) (nbytes) > shared_memory_limit_raised[id]) {                                           \
                 CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes)); \
-                shared_memory_limit_raised[id] = true;                                                         \
+                shared_memory_limit_raised[id] = nbytes;                                                       \
             }                                                                                                  \
         } while (0)
 #else
@@ -283,9 +283,18 @@ static const char * cu_get_error_str(CUresult err) {
 #define AMPERE_MMA_AVAILABLE
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL && __CUDA_ARCH__ < GGML_CUDA_CC_RUBIN
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && \
+        (!defined(__CUDA_ARCH__) || (__CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL && __CUDA_ARCH__ < GGML_CUDA_CC_RUBIN))
 #    define BLACKWELL_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_BLACKWELL
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && BLACKWELL <= __CUDA_ARCH__ < RUBIN
+
+#define QK_MXFP6_E2M3 QK_MXFP6_SUB
+#define QR_MXFP6_E2M3 1
+#define QI_MXFP6_E2M3 (QK_MXFP6_E2M3 / (4 * QR_MXFP6_E2M3))
+
+#if defined(BLACKWELL_MMA_AVAILABLE)
+#include "mma-tiles.cuh"
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
 
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define CP_ASYNC_AVAILABLE
@@ -1017,6 +1026,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_MXFP4> {
     static constexpr int qk = QK_MXFP4;
     static constexpr int qr = QR_MXFP4;
     static constexpr int qi = QI_MXFP4;
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_MXFP6_E2M3> {
+    static constexpr int qk = QK_MXFP6_E2M3;
+    static constexpr int qr = QR_MXFP6_E2M3;
+    static constexpr int qi = QI_MXFP6_E2M3;
 };
 
 template<>
