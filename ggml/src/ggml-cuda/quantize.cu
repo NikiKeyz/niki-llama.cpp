@@ -1,6 +1,13 @@
 #include "quantize.cuh"
 #include <cstdint>
 
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && defined(__CUDACC__) && defined(__has_include)
+#if __has_include(<cuda_fp6.h>)
+#include <cuda_fp6.h>
+#define GGML_CUDA_MXFP6_E2M3_NATIVE_FP6
+#endif // __has_include(<cuda_fp6.h>)
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && defined(__CUDACC__) && defined(__has_include)
+
 __launch_bounds__(CUDA_QUANTIZE_BLOCK_SIZE, 1)
 static __global__ void quantize_q8_1(
         const float * x_ptr, void * vy_ptr,
@@ -74,7 +81,6 @@ __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
     return static_cast<uint8_t>(biased);
 }
 
-
 static __global__ void quantize_mmq_nvfp4(
         const float * __restrict__ x, const int32_t * __restrict__ ids, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
@@ -134,7 +140,7 @@ static __global__ void quantize_mmq_nvfp4(
         const float test_scale = ggml_cuda_ue4m3_to_fp32(code);
         const float test_inv_scale = test_scale > 0.0f ? 0.5f / test_scale : 0.0f;
         float cur_err = 0.0f;
-#pragma unroll
+#pragma unroll // this is faster than the previous __nv_fp4x4_e2m1
         for (int k = 0; k < QK_NVFP4_SUB; ++k) {
             const float v = vals_raw[k];
             const uint8_t q = ggml_cuda_float_to_fp4_e2m1(v, test_inv_scale);
@@ -152,7 +158,7 @@ static __global__ void quantize_mmq_nvfp4(
     const float inv_scale = subblock_scale > 0.0f ? 0.5f / subblock_scale : 0.0f;
     uint32_t q0 = 0;
     uint32_t q1 = 0;
-#pragma unroll // this is faster than the previous __nv_fp4x4_e2m1
+#pragma unroll
     for (int k = 0; k < QK_NVFP4_SUB / 4; ++k) {
         q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals_raw[k +  0], inv_scale) << (8 * k);
         q0 |= (uint32_t) ggml_cuda_float_to_fp4_e2m1(vals_raw[k +  8], inv_scale) << (8 * k + 4);
@@ -168,6 +174,121 @@ static __global__ void quantize_mmq_nvfp4(
     NO_DEVICE_CODE; // This is for Blackwell NVFP4 activations only.
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 
+}
+
+static __device__ __forceinline__ uint8_t mxfp6_e2m3_scale_code_from_amax(float amax) {
+    if (!(amax > 0.0f) || !isfinite(amax)) {
+        return 127;
+    }
+
+    const float scaled = amax * (1.0f / 7.5f);
+    const uint32_t bits = __float_as_uint(scaled);
+    const int exp_bits = int((bits >> 23) & 0xff);
+    int code = 0;
+    if (exp_bits != 0) {
+        const int exp = exp_bits - 127;
+        const int mantissa = int(bits & 0x007fffff);
+        code = exp + (mantissa != 0) + 127;
+    }
+    code = max(0, min(254, code));
+    return (uint8_t) code;
+}
+
+static __device__ __forceinline__ uint8_t mxfp6_e2m3_quant(float x, float inv_scale) {
+    if (!isfinite(x) || x == 0.0f || !(inv_scale > 0.0f)) {
+        return 0;
+    }
+
+#if defined(GGML_CUDA_MXFP6_E2M3_NATIVE_FP6)
+    const __nv_fp6_storage_t raw = __nv_cvt_float_to_fp6(x * inv_scale, __NV_E2M3, cudaRoundNearest);
+    return (uint8_t) (raw & 0x3Fu);
+#else
+    const int sign = x < 0.0f ? 0x20 : 0x00;
+    const float q = fabsf(x) * inv_scale * 8.0f;
+    int code = 0;
+    if (q < 15.5f) {
+        code = max(0, min(15, __float2int_rn(q)));
+    } else if (q < 31.0f) {
+        const int mantissa = __float2int_rn((q - 16.0f) * 0.5f);
+        code = 16 + max(0, min(7, mantissa));
+    } else {
+        const int mantissa = __float2int_rn((q - 32.0f) * 0.25f);
+        code = 24 + max(0, min(7, mantissa));
+    }
+    return (uint8_t) (sign | code);
+#endif // defined(GGML_CUDA_MXFP6_E2M3_NATIVE_FP6)
+}
+
+template <bool has_ids, bool has_scale>
+static __global__ void quantize_mmq_mxfp6_e2m3(const float * __restrict__ x,
+                                               const int32_t * __restrict__ ids,
+                                               const int32_t * __restrict__ ids_expert,
+                                               void * __restrict__ vy,
+                                               const float * __restrict__ scale_activation,
+                                               const int64_t scale_activation_ne,
+                                               const int64_t ne00,
+                                               const int64_t s01,
+                                               const int64_t s02,
+                                               const int64_t s03,
+                                               const int64_t ne0,
+                                               const int64_t ne1,
+                                               const int64_t ne2) {
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    constexpr int warps_per_block = 8;
+    const int64_t k_block = blockIdx.y;
+    const int tid  = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int64_t i1 = int64_t(blockIdx.x) * warps_per_block + warp;
+    if (i1 >= ne1) {
+        return;
+    }
+    const int64_t i2 = blockIdx.z % ne2;
+    const int64_t i3 = blockIdx.z / ne2;
+    const int64_t i01 = has_ids ? ids[i1] : i1;
+
+    float inv_input_scale = 1.0f;
+    bool use_input_scale = false;
+    if constexpr (has_scale) {
+        if (lane == 0) {
+            const int64_t scale_idx = scale_activation_ne <= 1 ? 0 : (has_ids && ids_expert ? ids_expert[i1] : i01);
+            const float input_scale = scale_activation[scale_idx];
+            if (input_scale != 1.0f && input_scale != 0.0f && isfinite(input_scale)) {
+                inv_input_scale = 1.0f / input_scale;
+            }
+        }
+        inv_input_scale = __shfl_sync(0xFFFFFFFFu, inv_input_scale, 0);
+        use_input_scale = inv_input_scale != 1.0f;
+    }
+
+    const int64_t blocks_per_col = (ne0 + QK_MXFP6_E2M3 - 1) / QK_MXFP6_E2M3;
+    if (k_block >= blocks_per_col) {
+        return;
+    }
+
+    const int64_t batch_offset = (int64_t) blockIdx.z * (blocks_per_col * ne1);
+    block_mxfp6_e2m3_mmq * y = (block_mxfp6_e2m3_mmq *) vy + batch_offset + k_block * ne1 + i1;
+
+    const int64_t base_idx = i3 * s03 + i2 * s02 + i01 * s01;
+    const int64_t i00 = k_block * QK_MXFP6_E2M3 + lane;
+    const float loaded = i00 < ne00 ? (use_input_scale ? x[base_idx + i00] * inv_input_scale : x[base_idx + i00]) : 0.0f;
+    const float val = isfinite(loaded) ? loaded : 0.0f;
+
+    const float amax = warp_reduce_max<QK_MXFP6_E2M3>(fabsf(val));
+    const uint8_t scale_code = mxfp6_e2m3_scale_code_from_amax(amax);
+    const float scale = ggml_cuda_e8m0_to_fp32(scale_code);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    const uint32_t code = (uint32_t) mxfp6_e2m3_quant(val, inv_scale);
+
+    if (lane == 0) {
+        y->e = scale_code;
+    }
+
+    ((uint8_t *) y->qs_u32)[lane] = (uint8_t) (code & 0x3Fu);
+#else
+    GGML_UNUSED_VARS(x, ids, ids_expert, vy, scale_activation, scale_activation_ne, ne00, s01, s02, s03, ne0, ne1, ne2);
+    NO_DEVICE_CODE;
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
 }
 
 // quantize values in the format mxfp4 is stored which is interleaved nibbles
@@ -419,10 +540,48 @@ void quantize_mmq_q8_1_cuda(
     }
 }
 
-void quantize_mmq_fp4_cuda(
-        const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
+void quantize_mmq_mxfp6_e2m3_cuda(
+        const float * x, const int32_t * ids, const int32_t * ids_expert, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3,
+        const float * scale_activation, const int64_t scale_activation_ne, cudaStream_t stream) {
+    GGML_ASSERT(type_src0 == GGML_TYPE_MXFP6_E2M3);
+    GGML_ASSERT(ne0 > 0);
+
+    constexpr int warps_per_block = 8;
+    const int64_t block_num_y = (ne0 + QK_MXFP6_E2M3 - 1) / QK_MXFP6_E2M3;
+    const dim3 num_blocks((ne1 + warps_per_block - 1) / warps_per_block, block_num_y, ne2 * ne3);
+    const dim3 block_size(warps_per_block * QK_MXFP6_E2M3, 1, 1);
+    if (ids) {
+        if (scale_activation) {
+            quantize_mmq_mxfp6_e2m3<true, true><<<num_blocks, block_size, 0, stream>>>(
+                x, ids, ids_expert, vy, scale_activation, scale_activation_ne, ne00, s01, s02, s03, ne0, ne1, ne2);
+        } else {
+            quantize_mmq_mxfp6_e2m3<true, false><<<num_blocks, block_size, 0, stream>>>(
+                x, ids, ids_expert, vy, nullptr, 0, ne00, s01, s02, s03, ne0, ne1, ne2);
+        }
+    } else if (scale_activation) {
+        quantize_mmq_mxfp6_e2m3<false, true><<<num_blocks, block_size, 0, stream>>>(
+            x, ids, nullptr, vy, scale_activation, scale_activation_ne, ne00, s01, s02, s03, ne0, ne1, ne2);
+    } else {
+        quantize_mmq_mxfp6_e2m3<false, false><<<num_blocks, block_size, 0, stream>>>(
+            x, ids, nullptr, vy, nullptr, 0, ne00, s01, s02, s03, ne0, ne1, ne2);
+    }
+}
+
+void quantize_mmq_fp4_cuda(const float *                    x,
+                           const int32_t *                  ids,
+                           void *                           vy,
+                           const ggml_type                  type_src0,
+                           const int64_t                    ne00,
+                           const int64_t                    s01,
+                           const int64_t                    s02,
+                           const int64_t                    s03,
+                           const int64_t                    ne0,
+                           const int64_t                    ne1,
+                           const int64_t                    ne2,
+                           const int64_t                    ne3,
+                           cudaStream_t                     stream) {
     GGML_ASSERT(type_src0 == GGML_TYPE_MXFP4 || type_src0 == GGML_TYPE_NVFP4);
     GGML_ASSERT(ne0 > 0);
 
