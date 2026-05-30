@@ -40,6 +40,33 @@
 #include "vendors/cuda.h"
 #endif // defined(GGML_USE_HIP)
 
+#ifndef GGML_HD
+#define GGML_HD __host__ __device__
+#endif // GGML_HD
+
+#define QK_FP8 96
+#define QK_FP8_SUB 32
+#define QK_FP8_FRAGS (QK_FP8 / QK_FP8_SUB)
+
+struct block_fp8 {
+    uint32_t qs[QK_FP8_FRAGS][QK_FP8_SUB / 4];
+    uint8_t  e[QK_FP8_FRAGS];
+    uint8_t  pad[1];
+};
+static_assert(sizeof(block_fp8) % 4 == 0, "wrong CUDA FP8 activation block alignment");
+
+static inline GGML_HD int64_t ggml_cuda_fp8_blocks_per_row(int64_t ne0) {
+    return (ne0 + QK_FP8 - 1) / QK_FP8;
+}
+
+static inline GGML_HD uint32_t ggml_cuda_fp8_get4_u8containers(const block_fp8 & block, int frag, int word) {
+    return block.qs[frag][word];
+}
+
+static inline GGML_HD void ggml_cuda_fp8_set4_u8containers(block_fp8 & block, int frag, int word, uint32_t packed4) {
+    block.qs[frag][word] = packed4;
+}
+
 #define STRINGIZE_IMPL(...) #__VA_ARGS__
 #define STRINGIZE(...) STRINGIZE_IMPL(__VA_ARGS__)
 
