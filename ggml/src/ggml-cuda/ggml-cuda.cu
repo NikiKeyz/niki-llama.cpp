@@ -2066,7 +2066,7 @@ static void ggml_cuda_op_mul_mat(
 
     const int64_t src1_padded_col_size = GGML_PAD(ne10, MATRIX_ROW_PADDING);
 #if defined(BLACKWELL_MMA_AVAILABLE)
-    const bool use_nvfp4_cuda = src0_is_contiguous && src0->view_src == nullptr && src0->type == GGML_TYPE_NVFP4;
+    const bool use_nvfp4_cuda = src0->type == GGML_TYPE_NVFP4;
     const bool use_nvfp4_mmq = use_nvfp4_cuda && op == ggml_cuda_op_mul_mat_q;
     const size_t src1_ddq_nvfp4_row_size = ggml_cuda_nvfp4_blocks_per_row(src1_padded_col_size) * sizeof(block_nvfp4_mmq);
     const bool use_mxfp6_cuda = src0_is_contiguous && src0->view_src == nullptr && src0->type == GGML_TYPE_MXFP6_E2M3 &&

@@ -130,8 +130,11 @@ void ggml_cuda_mul_mat_q(
     const bool use_stream_k = (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
                             || GGML_CUDA_CC_IS_CDNA(cc);
     const bool use_native_fp4 = blackwell_mma_available(cc) && src0->type == GGML_TYPE_MXFP4;
-    const bool use_native_nvfp4 = blackwell_mma_available(cc) && ggml_is_contiguous(src0) && src0->view_src == nullptr &&
-        src0->type == GGML_TYPE_NVFP4;
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    const bool use_native_nvfp4 = src0->type == GGML_TYPE_NVFP4;
+#else
+    const bool use_native_nvfp4 = false;
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
     const bool use_mxfp6_mmq = blackwell_mma_available(cc) && ggml_is_contiguous(src0) && src0->view_src == nullptr &&
         src0->type == GGML_TYPE_MXFP6_E2M3 && ne00 % QK_MXFP6_E2M3 == 0;
 
@@ -141,12 +144,21 @@ void ggml_cuda_mul_mat_q(
     if (scale_x_q_d == nullptr && use_mxfp6_mmq) {
         scale_x_q_d = &((const tensor_mxfp6 *) src0_d)->input_scale;
     }
+    const ggml_tensor * nvfp4_scale_x_t = use_native_nvfp4 ? ggml_cuda_mul_mat_input_scale(dst) : nullptr;
+    const float * nvfp4_scale_x_d = nvfp4_scale_x_t != nullptr ? (const float *) nvfp4_scale_x_t->data : nullptr;
+    const int64_t nvfp4_scale_x_ne = nvfp4_scale_x_t != nullptr ? ggml_nelements(nvfp4_scale_x_t) : 0;
+#if defined(BLACKWELL_MMA_AVAILABLE)
     const ggml_tensor * nvfp4_scale_x_src = use_native_nvfp4 ? src0->src[1] : nullptr;
-    const float * nvfp4_scale_x_q_d = ggml_cuda_nvfp4_scale_ptr(nvfp4_scale_x_src);
-    const int64_t nvfp4_scale_x_q_ne = nvfp4_scale_x_q_d != nullptr ? ggml_nelements(nvfp4_scale_x_src) : (use_native_nvfp4 ? 1 : 0);
-    if (nvfp4_scale_x_q_d == nullptr && use_native_nvfp4) {
-        nvfp4_scale_x_q_d = &((const block_nvfp4_blackwell_tensor *) src0_d)->input_scale;
-    }
+    const bool nvfp4_scale_x_in_header = use_native_nvfp4 &&
+        nvfp4_scale_x_src != nullptr && ggml_is_scalar(nvfp4_scale_x_src);
+    const float * nvfp4_scale_x_q_d = nvfp4_scale_x_d != nullptr ? nvfp4_scale_x_d :
+        nvfp4_scale_x_in_header ? &((const block_nvfp4_blackwell_tensor *) src0_d)->input_scale : nullptr;
+    const int64_t nvfp4_scale_x_q_ne = nvfp4_scale_x_d != nullptr ? nvfp4_scale_x_ne :
+        nvfp4_scale_x_in_header ? 1 : 0;
+#else
+    const float * nvfp4_scale_x_q_d = nvfp4_scale_x_d;
+    const int64_t nvfp4_scale_x_q_ne = nvfp4_scale_x_ne;
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
 
     int64_t s01_mmq = s01;
     int64_t s02_mmq = s02;
@@ -310,9 +322,7 @@ void ggml_cuda_op_mul_mat_q(
     const int64_t row_diff = row_high - row_low;
     const int id = ggml_cuda_get_device();
     const int cc = ggml_cuda_info().devices[id].cc;
-    const int64_t stride01 = ggml_is_contiguous(src0) && src0->view_src == nullptr &&
-            src0->type == GGML_TYPE_NVFP4 ?
-            ggml_cuda_nvfp4_blocks_per_row(ne00) :
+    const int64_t stride01 = src0->type == GGML_TYPE_NVFP4 ? ggml_cuda_nvfp4_blocks_per_row(ne00) :
         ggml_is_contiguous(src0) && src0->view_src == nullptr &&
             src0->type == GGML_TYPE_MXFP6_E2M3 && ne00 % QK_MXFP6_E2M3 == 0 ?
             ggml_cuda_mxfp6_e2m3_frags_per_row(ne00) :
