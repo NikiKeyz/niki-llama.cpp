@@ -130,8 +130,11 @@ void ggml_cuda_mul_mat_q(
     const bool fallback = ne01 % 128 != 0;
 
     const bool use_native_fp4 = blackwell_mma_available(cc) && src0->type == GGML_TYPE_MXFP4;
-    const bool use_native_nvfp4 = blackwell_mma_available(cc) && ggml_is_contiguous(src0) && src0->view_src == nullptr &&
-        src0->type == GGML_TYPE_NVFP4;
+#if defined(BLACKWELL_MMA_AVAILABLE)
+    const bool use_native_nvfp4 = src0->type == GGML_TYPE_NVFP4;
+#else
+    const bool use_native_nvfp4 = false;
+#endif // defined(BLACKWELL_MMA_AVAILABLE)
     const bool use_mxfp6_mmq = blackwell_mma_available(cc) && ggml_is_contiguous(src0) && src0->view_src == nullptr &&
         src0->type == GGML_TYPE_MXFP6_E2M3 && ne00 % QK_MXFP6_E2M3 == 0;
 
