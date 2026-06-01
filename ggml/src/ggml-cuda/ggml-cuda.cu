@@ -719,8 +719,6 @@ static bool ggml_cuda_set_tensor_nvfp4(ggml_tensor * tensor, const void * data, 
     }
 
     const size_t logical_size = ggml_nbytes(tensor);
-    const int64_t nplanes = tensor->ne[2] * tensor->ne[3];
-    const size_t rows_offset = ggml_cuda_nvfp4_tensor_packed_size(tensor->ne[0], tensor->ne[1], nplanes);
     const size_t alloc_size = ggml_cuda_nvfp4_tensor_alloc_size(tensor);
     const bool set_full_tensor = offset == 0 && size == logical_size;
     char * buf = (char *) malloc(set_full_tensor ? alloc_size : logical_size + alloc_size);
@@ -728,9 +726,9 @@ static bool ggml_cuda_set_tensor_nvfp4(ggml_tensor * tensor, const void * data, 
     char * rows   = set_full_tensor ? nullptr : buf;
     char * packed = set_full_tensor ? buf : buf + logical_size;
     if (!set_full_tensor) {
-        CUDA_CHECK(cudaMemcpyAsync(rows, (const char *) tensor->data + rows_offset,
-                logical_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+        CUDA_CHECK(cudaMemcpyAsync(packed, tensor->data, alloc_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
         CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        ggml_cuda_unpack_tensor_nvfp4(tensor, packed, rows);
         memcpy(rows + offset, data, size);
     }
 
@@ -746,12 +744,17 @@ static bool ggml_cuda_get_tensor_nvfp4(const ggml_tensor * tensor, void * data, 
         return false;
     }
 
-    const int64_t nplanes = tensor->ne[2] * tensor->ne[3];
-    const size_t rows_offset = ggml_cuda_nvfp4_tensor_packed_size(tensor->ne[0], tensor->ne[1], nplanes);
-
-    CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + rows_offset + offset,
-            size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+    const size_t logical_size = ggml_nbytes(tensor);
+    const size_t alloc_size = ggml_cuda_nvfp4_tensor_alloc_size(tensor);
+    char * buf = (char *) malloc(alloc_size + logical_size);
+    GGML_ASSERT(buf != nullptr);
+    char * packed = buf;
+    char * rows = buf + alloc_size;
+    CUDA_CHECK(cudaMemcpyAsync(packed, tensor->data, alloc_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+    ggml_cuda_unpack_tensor_nvfp4(tensor, packed, rows);
+    memcpy(data, rows + offset, size);
+    free(buf);
     return true;
 }
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
@@ -1132,15 +1135,12 @@ static void ggml_backend_cuda_split_buffer_set_tensor(ggml_backend_buffer_t buff
 
         if (is_nvfp4) {
             const size_t row_size = ggml_row_size(GGML_TYPE_NVFP4, ne0);
-            const size_t rows_size = row_size * nrows_split;
-            const size_t rows_offset = ggml_cuda_nvfp4_tensor_packed_size(ne0, nrows_split, /*nplanes=*/1);
             char * packed = (char *) malloc(original_size);
             GGML_ASSERT(packed != nullptr);
             block_nvfp4_blackwell_tensor * packed_tensor = (block_nvfp4_blackwell_tensor *) packed;
             ggml_cuda_nvfp4_set_tensor_header(tensor, packed_tensor, nrows_split, /*nplanes=*/1);
             const char * rows_src = (const char *) data + row_low*row_size;
             ggml_cuda_repack_tiles_nvfp4(ne0, nrows_split, rows_src, packed_tensor->tiles);
-            memcpy(packed + rows_offset, rows_src, rows_size);
             CUDA_CHECK(cudaMemcpyAsync(extra->data_device[id], packed, original_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
             free(packed);
         } else if (is_mxfp6) {
@@ -1197,12 +1197,14 @@ static void ggml_backend_cuda_split_buffer_get_tensor(ggml_backend_buffer_t buff
 
         if (is_nvfp4) {
             const size_t row_size = ggml_row_size(GGML_TYPE_NVFP4, ne0);
-            const size_t rows_size = row_size * nrows_split;
-            const size_t rows_offset = ggml_cuda_nvfp4_tensor_packed_size(ne0, nrows_split, /*nplanes=*/1);
-            CUDA_CHECK(cudaMemcpyAsync((char *) data + row_low*row_size,
-                (const char *) extra->data_device[id] + rows_offset,
-                rows_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
-            GGML_UNUSED(original_size);
+            char * packed = (char *) malloc(original_size);
+            GGML_ASSERT(packed != nullptr);
+            CUDA_CHECK(cudaMemcpyAsync(packed, extra->data_device[id], original_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+            CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+            ggml_cuda_unpack_tiles_nvfp4(ne0, nrows_split,
+                    ((const block_nvfp4_blackwell_tensor *) packed)->tiles,
+                    (char *) data + row_low*row_size);
+            free(packed);
         } else if (is_mxfp6) {
             if (!copied_mxfp6_header) {
                 CUDA_CHECK(cudaMemcpyAsync(data, extra->data_device[id], MXFP6_HEADER_OFFSET, cudaMemcpyDeviceToHost, cudaStreamPerThread));
