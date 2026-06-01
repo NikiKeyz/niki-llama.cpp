@@ -935,7 +935,7 @@ template <int J, bool fallback>
 static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_nvfp4_nvfp4(
         const block_nvfp4_blackwell * __restrict__ x_blocks, const int stride_row_x,
         const block_nvfp4_mmq * __restrict__ y, float * __restrict__ sum,
-        const int k00, const int i_max, const float tensor_scale) {
+        const int k00, const int i_max) {
     typedef tile<16, 8, int>   tile_A;
     typedef tile<8, 8, int>    tile_B;
     typedef tile<16, 8, float> tile_C;
@@ -987,7 +987,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_nvfp4_nvfp4(
                     mma_block_scaled_fp4<GGML_TYPE_NVFP4>(C[1], A[n][1], B[1], scaleA[n][1], scaleB[1]);
 #pragma unroll
                     for (int l = 0; l < tile_C::ne; ++l) {
-                        sum_n[l] += tensor_scale * (C[0].x[l] + C[1].x[l]);
+                        sum_n[l] += C[0].x[l] + C[1].x[l];
                     }
                 }
             }
@@ -1102,7 +1102,12 @@ static __device__ __forceinline__ void ggml_cuda_mmq_process_nvfp4_tiles(
     const block_nvfp4_blackwell * __restrict__ x_blocks = x_tensor->tiles + offset_x;
     for (int k_block = k_block_start; k_block < k_block_stop; ++k_block) {
         ggml_cuda_mmq_vec_dot_nvfp4_nvfp4<J, fallback>(
-            x_blocks + k_block, stride_row_x, y_nv + ncols_y*k_block, sum, 0, tile_x_max_i, tensor_scale);
+            x_blocks + k_block, stride_row_x, y_nv + ncols_y*k_block, sum, 0, tile_x_max_i);
+    }
+
+#pragma unroll
+    for (int i = 0; i < int(sizeof(sum) / sizeof(sum[0])); ++i) {
+        sum[i] *= tensor_scale;
     }
 
     constexpr ggml_cuda_mmq_write_back_t write_back = ggml_cuda_mmq_write_back_mma<GGML_TYPE_NVFP4, J, fallback>;
