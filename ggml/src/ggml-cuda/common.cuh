@@ -1711,6 +1711,9 @@ static inline const ggml_tensor * ggml_cuda_mul_mat_input_scale(const ggml_tenso
     if (scale != nullptr && strstr(ggml_get_name(scale), ".input_scale") == nullptr) {
         return nullptr;
     }
+    if (scale != nullptr && (!scale->data || !scale->buffer)) {
+        return nullptr;
+    }
     if (scale != nullptr && scale->buffer != nullptr && ggml_backend_buffer_is_host(scale->buffer)) {
         return nullptr;
     }

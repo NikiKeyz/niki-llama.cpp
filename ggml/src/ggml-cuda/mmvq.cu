@@ -1912,8 +1912,7 @@ void ggml_cuda_mul_mat_vec_q(
     CUDA_CHECK(cudaGetLastError());
 
 #if defined(BLACKWELL_MMA_AVAILABLE)
-    if (src0->type == GGML_TYPE_NVFP4 && !ids && ncols_dst == 1 &&
-            fusion_local.gate == nullptr && fusion_local.x_bias == nullptr && fusion_local.gate_bias == nullptr) {
+    if (src0->type == GGML_TYPE_NVFP4 && !ids && ncols_dst == 1) {
         const uint3 nchannels_y_fd = make_uint3(0, 0, 0);
         const uint3 channel_ratio_fd = init_fastdiv_values(nchannels_dst / ne02);
         const uint3 sample_ratio_fd = init_fastdiv_values(ne3 / ne03);
@@ -1924,11 +1923,20 @@ void ggml_cuda_mul_mat_vec_q(
         constexpr int c_ncols_dst = 1;
         std::pair<dim3, dim3> dims = calc_launch_params<GGML_TYPE_NVFP4>(
                 c_ncols_dst, ne01, nchannels_dst, ne3, warp_size, table_id);
-        mul_mat_vec_q<GGML_TYPE_NVFP4, c_ncols_dst, false, false, true><<<dims.first, dims.second, 0, stream>>>(
-                src0_data, src1_t.get(), nullptr, fusion_local, dst_d, ne00,
-                nchannels_y_fd, ne01, int(stride_row_x_rows), int(stride_col_y), int(stride_col_dst),
-                channel_ratio_fd, int(stride_channel_x_rows), int(stride_channel_y), int(stride_channel_dst),
-                sample_ratio_fd, int(stride_sample_x_rows), int(stride_sample_y), int(s3), 0);
+        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(dims.first, dims.second, 0, stream);
+        if (has_fusion) {
+            ggml_cuda_kernel_launch(mul_mat_vec_q<GGML_TYPE_NVFP4, c_ncols_dst, true, false, true>, launch_params,
+                    src0_data, src1_t.get(), nullptr, fusion_local, dst_d, ne00,
+                    nchannels_y_fd, ne01, int(stride_row_x_rows), int(stride_col_y), int(stride_col_dst),
+                    channel_ratio_fd, int(stride_channel_x_rows), int(stride_channel_y), int(stride_channel_dst),
+                    sample_ratio_fd, int(stride_sample_x_rows), int(stride_sample_y), int(s3), 0);
+        } else {
+            ggml_cuda_kernel_launch(mul_mat_vec_q<GGML_TYPE_NVFP4, c_ncols_dst, false, false, true>, launch_params,
+                    src0_data, src1_t.get(), nullptr, fusion_local, dst_d, ne00,
+                    nchannels_y_fd, ne01, int(stride_row_x_rows), int(stride_col_y), int(stride_col_dst),
+                    channel_ratio_fd, int(stride_channel_x_rows), int(stride_channel_y), int(stride_channel_dst),
+                    sample_ratio_fd, int(stride_sample_x_rows), int(stride_sample_y), int(s3), 0);
+        }
         CUDA_CHECK(cudaGetLastError());
         return;
     }

@@ -1091,8 +1091,8 @@ static __device__ __forceinline__ void ggml_cuda_mmq_process_nvfp4_tiles(
     const block_nvfp4_blackwell_tensor * __restrict__ x_tensor = (const block_nvfp4_blackwell_tensor *) x;
     float weight_scale = x_tensor->weight_scales ? x_tensor->weight_scales[scale_channel] : x_tensor->weight_scale;
     float input_scale  = x_tensor->input_scales  ? x_tensor->input_scales[scale_channel]  : x_tensor->input_scale;
-    weight_scale = weight_scale > 0.0f ? weight_scale : 1.0f;
-    input_scale  = input_scale  > 0.0f ? input_scale  : 1.0f;
+    weight_scale = weight_scale > 0.0f && isfinite(weight_scale) ? weight_scale : 1.0f;
+    input_scale  = input_scale  > 0.0f && isfinite(input_scale)  ? input_scale  : 1.0f;
     const float tensor_scale = weight_scale * input_scale;
 
     const int k_block_start = kb0_start / blocks_per_tile;
