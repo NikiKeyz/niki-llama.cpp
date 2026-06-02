@@ -423,12 +423,10 @@ static __global__ void quantize_repacked_mmq_nvfp4(const float * __restrict__ x,
         const float test_inv_scale = 0.5f / test_scale;
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
-            const float ax0 = fabsf(vals0[k]);
-            const float ax1 = fabsf(vals1[k]);
-            const uint8_t q0 = ggml_cuda_abs_to_fp4_e2m1(ax0 * test_inv_scale);
-            const uint8_t q1 = ggml_cuda_abs_to_fp4_e2m1(ax1 * test_inv_scale);
-            const float err0 = ax0 - kvalues_mxfp4[q0] * test_scale;
-            const float err1 = ax1 - kvalues_mxfp4[q1] * test_scale;
+            const uint8_t q0 = ggml_cuda_float_to_fp4_e2m1(vals0[k], test_inv_scale);
+            const uint8_t q1 = ggml_cuda_float_to_fp4_e2m1(vals1[k], test_inv_scale);
+            const float err0 = fabsf(vals0[k]) - fabsf(kvalues_mxfp4[q0 & 0x7]) * test_scale;
+            const float err1 = fabsf(vals1[k]) - fabsf(kvalues_mxfp4[q1 & 0x7]) * test_scale;
             cur_err += err0 * err0 + err1 * err1;
         }
 

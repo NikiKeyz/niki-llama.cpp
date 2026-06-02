@@ -424,22 +424,27 @@ static __device__ __forceinline__ int get_int_from_table_16_contiguous4(const ui
     return __byte_perm(low, high, 0x3210u | ((q4 & 0x8888u) >> 1));
 }
 
-template <int vdr>
-static __device__ __forceinline__ float vec_dot_nvfp4_q8_1_bw_tile(
-                                        const block_nvfp4_blackwell & tile,
+static __device__ __forceinline__ float vec_dot_nvfp4_q8_1_bw(
+                                        const void * __restrict__ vbq,
                                         const block_q8_1 * __restrict__ bq8_1,
-                                        const int row_in_tile,
-                                        const int frag,
+                                        const uint64_t kbx,
                                         const int32_t & iqs,
-                                        const float tensor_scale) {
+                                        const uint32_t channel_x) {
+    const int row_in_tile = int(kbx >> 60);
+    const int frag = int((kbx >> 58) & 0x03);
+    const uint64_t block_rel = kbx & ((UINT64_C(1) << 58) - 1);
+    const block_nvfp4_blackwell_tensor * tensor = (const block_nvfp4_blackwell_tensor *) vbq;
+    const block_nvfp4_blackwell & tile = tensor->tiles[block_rel];
     const block_nvfp4_blackwell_frag & frag_tile = tile.tiles[frag];
     const int lane_base = (row_in_tile & 7) * 4;
     const int reg_base  = row_in_tile >> 3;
     const uint32_t scale_word = frag_tile.scales_u32[lane_base + reg_base];
+    float tensor_scale = tensor->weight_scales ? tensor->weight_scales[channel_x] : tensor->weight_scale;
+    tensor_scale = tensor_scale > 0.0f ? tensor_scale : 1.0f;
 
     float sum = 0.0f;
 #pragma unroll
-    for (int i = 0; i < vdr/2; i++) {
+    for (int i = 0; i < VDR_NVFP4_Q8_1_MMVQ/2; i++) {
         const int32_t iqs0 = iqs + 2*i;
         const int32_t is = iqs0 >> 1;
         const int32_t sub = is & 3;
@@ -466,22 +471,6 @@ static __device__ __forceinline__ float vec_dot_nvfp4_q8_1_bw_tile(
     }
 
     return sum;
-}
-
-static __device__ __forceinline__ float vec_dot_nvfp4_q8_1_bw(
-                                        const void * __restrict__ vbq,
-                                        const block_q8_1 * __restrict__ bq8_1,
-                                        const uint64_t kbx,
-                                        const int32_t & iqs,
-                                        const uint32_t channel_x) {
-    const int row_in_tile = int(kbx >> 60);
-    const int frag = int((kbx >> 58) & 0x03);
-    const uint64_t block_rel = kbx & ((UINT64_C(1) << 58) - 1);
-    const block_nvfp4_blackwell_tensor * tensor = (const block_nvfp4_blackwell_tensor *) vbq;
-    const block_nvfp4_blackwell & tile = tensor->tiles[block_rel];
-    float tensor_scale = tensor->weight_scales ? tensor->weight_scales[channel_x] : tensor->weight_scale;
-    tensor_scale = tensor_scale > 0.0f ? tensor_scale : 1.0f;
-    return vec_dot_nvfp4_q8_1_bw_tile<VDR_NVFP4_Q8_1_MMVQ>(tile, bq8_1, row_in_tile, frag, iqs, tensor_scale);
 }
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
 
