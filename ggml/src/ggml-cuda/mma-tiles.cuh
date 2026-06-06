@@ -131,6 +131,10 @@ static inline size_t ggml_cuda_nvfp4_plane_size(int64_t ne0, int64_t nrows) {
            (size_t) ggml_cuda_nvfp4_blocks_per_row(ne0) * sizeof(block_nvfp4_blackwell);
 }
 
+static inline size_t ggml_cuda_nvfp4_rows_size(int64_t ne0, int64_t ne1, int64_t nplanes) {
+    return (size_t) nplanes * (size_t) ne1 * ggml_row_size(GGML_TYPE_NVFP4, ne0);
+}
+
 static inline size_t ggml_cuda_nvfp4_tensor_packed_size(int64_t ne0, int64_t ne1, int64_t nplanes) {
     return sizeof(block_nvfp4_blackwell_tensor) + (size_t) nplanes * ggml_cuda_nvfp4_plane_size(ne0, ne1);
 }
@@ -185,23 +189,6 @@ static inline void ggml_cuda_nvfp4_set_tensor_header(
     dst->input_scales  = ggml_cuda_nvfp4_scale_ptr(input_scale_t);
     GGML_UNUSED(ne1);
     GGML_UNUSED(nplanes);
-}
-
-static inline void ggml_cuda_nvfp4_patch_tensor_header(
-        const ggml_tensor * tensor, block_nvfp4_blackwell_tensor * dst, cudaStream_t stream) {
-    const ggml_tensor * weight_scale_t = tensor != nullptr ? tensor->src[0] : nullptr;
-    const ggml_tensor * input_scale_t  = tensor != nullptr ? tensor->src[1] : nullptr;
-
-    auto patch_scalar = [stream](const ggml_tensor * scale_t, float * dst_scale) {
-        if (scale_t == nullptr || !ggml_is_scalar(scale_t) ||
-                scale_t->type != GGML_TYPE_F32 || scale_t->data == nullptr) {
-            return;
-        }
-        CUDA_CHECK(cudaMemcpyAsync(dst_scale, scale_t->data, sizeof(float), cudaMemcpyDefault, stream));
-    };
-
-    patch_scalar(weight_scale_t, &dst->weight_scale);
-    patch_scalar(input_scale_t,  &dst->input_scale);
 }
 
 static inline void ggml_cuda_mxfp6_e2m3_patch_tensor_header(const ggml_tensor * tensor, tensor_mxfp6 * dst) {

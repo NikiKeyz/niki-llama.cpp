@@ -668,9 +668,6 @@ static __global__ void mul_mat_vec_q(
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
             for (int i = 0; i < rows_per_cuda_block; ++i) {
-                if (rows_per_cuda_block != 1 && uint32_t(row0 + i) >= nrows_x) {
-                    continue;
-                }
                 const block_q8_1 * y_ptr_q8 = &y_q8[j*stride_col_y + kby];
                 const uint32_t row = row0 + i;
                 const uint64_t kbx_q = get_mmvq_kbx<type>(
@@ -828,10 +825,7 @@ static __global__ void mul_mat_vec_q_moe(
         const int kqs = vdr * (threadIdx.x % (qi/vdr));
 
 #pragma unroll
-            for (int i = 0; i < c_rows_per_block; ++i) {
-                if (c_rows_per_block != 1 && uint32_t(row0 + i) >= nrows_x) {
-                    continue;
-                }
+        for (int i = 0; i < c_rows_per_block; ++i) {
             const uint32_t row = row0 + i;
             const uint64_t kbx_q = get_mmvq_kbx<type>(0, channel_x, row, 0, stride_channel_x, stride_row_x, kbx);
             tmp[i] += vec_dot_mmvq<type>(vx, &y_q8[kby], kbx_q, kqs, channel_x);
@@ -900,8 +894,8 @@ template <ggml_type type>
 static void mul_mat_vec_q_moe_launch(
         const void * vx, const void * vy, const int32_t * ids, float * dst,
         const uint32_t ncols_x, const uint3 nchannels_y, const uint32_t nrows_x,
-            const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
-            const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
+        const uint32_t stride_row_x, const uint32_t stride_col_y, const uint32_t stride_col_dst,
+        const uint32_t stride_channel_x, const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
         const uint32_t ncols_dst, const uint32_t ids_stride,
         const int warp_size, const int nchannels_dst, cudaStream_t stream) {
 
