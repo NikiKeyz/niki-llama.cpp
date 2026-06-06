@@ -1722,7 +1722,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     };
 
-    for (int il = 0; il < n_layer; ++il) {
+    for (int il = 0; il < n_layer_all; ++il) {
         auto & layer = layers[il];
         patch_nvfp4_tensor_header(layer.wq);
         patch_nvfp4_tensor_header(layer.wk);
