@@ -47,7 +47,27 @@ The number of accepted tokens is stored for each used n-gram.
 llama-server [...] --spec-type ngram-map-k --spec-draft-n-max 64
 ```
 
-#### n-gram Map Key-4-Values (`ngram-map-k4v`)
+#### n-gram Map Simple (`ngram-map-simple`)
+
+This implementation extends ngram-simple with frequency tracking and persistent storage. Unlike ngram-simple which only searches the current conversation, ngram-map-simple maintains a pre-built index from external corpora (codebase, documentation, session history). When a matching n-gram is found, it returns the most frequently observed continuation.
+
+**Key features:**
+- Pre-built from external corpus using `ngram-map-simple-create` tool
+- Persistent binary cache that survives server restarts
+- Returns most frequent continuation (not just first match)
+- Minimal overhead, similar to ngram-simple
+
+**Example:** Server with pre-built codebase cache.
+```
+llama-server [...] --spec-type ngram-map-simple --spec-ngram-map-simple-cache /path/to/cache.bin
+```
+
+**Creating a cache:**
+```
+ngram-map-simple-create -m /path/to/model -f /path/to/code -o cache.bin
+```
+
+### n-gram Map Key-4-Values (`ngram-map-k4v`)
 
 This experimental implementation looks for the current n-gram of size n (called the _key_) in the token history. For each key, up to four _values_ (n-grams of size m, called _mgrams_) are tracked. An internal statistic counts the occurrences of each mgram after the key n-gram. If one mgram is significantly more frequent than the others, it is used as the draft.
 
@@ -108,10 +128,10 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
 ### General Speculative Parameters
 
 ```
---spec-type [none|draft-simple|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
-                                        comma-separated list of types of speculative decoding to use
-                                        (default: none)
-                                        (env: LLAMA_ARG_SPEC_TYPE)
+--spec-type [none|draft-simple|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|ngram-map-simple]
+                                         comma-separated list of types of speculative decoding to use
+                                         (default: none)
+                                         (env: LLAMA_ARG_SPEC_TYPE)
 --spec-default                          use default speculative decoding config
                                         (enables ngram-mod)
 ```
@@ -236,7 +256,20 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
 --spec-ngram-map-k4v-size-m             N
                                         ngram size M for ngram-map-k4v speculative decoding, length of draft m-gram (default: 48)
 --spec-ngram-map-k4v-min-hits           N
-                                        minimum hits for ngram-map-k4v speculative decoding (default: 1)
+                                         minimum hits for ngram-map-k4v speculative decoding (default: 1)
+```
+
+### n-gram Map Simple Parameters
+
+```
+--spec-ngram-map-simple-size-n          N
+                                         ngram size N for ngram-map-simple speculative decoding, length of lookup n-gram (default: 8)
+--spec-ngram-map-simple-size-m          N
+                                         ngram size M for ngram-map-simple speculative decoding, length of draft m-gram (default: 16)
+--spec-ngram-map-simple-min-hits        N
+                                         minimum hits for ngram-map-simple speculative decoding (default: 1)
+--spec-ngram-map-simple-cache           PATH
+                                         path to cache file for ngram-map-simple speculative decoding (default: unused)
 ```
 
 ### `--spec-type TYPE`
@@ -253,6 +286,7 @@ Specifies a comma-separated list of speculative decoding types to use.
 | `ngram-map-k` | Use n-gram pattern matching with n-gram-keys |
 | `ngram-map-k4v` | Use n-gram pattern matching with n-gram-keys and up to four m-gram values (experimental) |
 | `ngram-mod` | Use basic ngram hasher for speculative decoding with shared pool |
+| `ngram-map-simple` | Use n-gram map with frequency tracking and persistent cache |
 
 **Example:** Server-instance used to refactor source code.
 ```bash
@@ -275,6 +309,7 @@ Each n-gram implementation has its own parameter:
 - `--spec-ngram-map-k-size-n` for `ngram-map-k`
 - `--spec-ngram-map-k4v-size-n` for `ngram-map-k4v`
 - `--spec-ngram-mod-n-match` for `ngram-mod`
+- `--spec-ngram-map-simple-size-n` for `ngram-map-simple`
 
 ### `--spec-ngram-*-size-m M`
 
@@ -287,6 +322,7 @@ Each n-gram implementation has its own parameter:
 - `--spec-ngram-simple-size-m` for `ngram-simple`
 - `--spec-ngram-map-k-size-m` for `ngram-map-k`
 - `--spec-ngram-map-k4v-size-m` for `ngram-map-k4v`
+- `--spec-ngram-map-simple-size-m` for `ngram-map-simple`
 
 ### `--spec-ngram-*-min-hits H`
 
@@ -297,6 +333,7 @@ Each n-gram implementation has its own parameter:
 - `--spec-ngram-simple-min-hits` for `ngram-simple`
 - `--spec-ngram-map-k-min-hits` for `ngram-map-k`
 - `--spec-ngram-map-k4v-min-hits` for `ngram-map-k4v`
+- `--spec-ngram-map-simple-min-hits` for `ngram-map-simple`
 
 ## Statistics
 Each speculative decoding implementation prints statistics.

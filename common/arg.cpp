@@ -3791,6 +3791,44 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
+    add_opt(common_arg(
+        {"--spec-ngram-map-simple-size-n"}, "N",
+        string_format("ngram size N for ngram-map-simple speculative decoding, length of lookup n-gram (default: %d)", params.speculative.ngram_map_simple.size_n),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("ngram size N must be between 1 and 1024 inclusive");
+            }
+            params.speculative.ngram_map_simple.size_n = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-map-simple-size-m"}, "N",
+        string_format("ngram size M for ngram-map-simple speculative decoding, length of draft m-gram (default: %d)", params.speculative.ngram_map_simple.size_m),
+        [](common_params & params, int value) {
+            if (value < 1 || value > 1024) {
+                throw std::invalid_argument("ngram size M must be between 1 and 1024 inclusive");
+            }
+            params.speculative.ngram_map_simple.size_m = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-map-simple-min-hits"}, "N",
+        string_format("minimum hits for ngram-map-simple speculative decoding (default: %d)", params.speculative.ngram_map_simple.min_hits),
+        [](common_params & params, int value) {
+            if (value < 1) {
+                throw std::invalid_argument("ngram min hits must be at least 1");
+            }
+            params.speculative.ngram_map_simple.min_hits = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-map-simple-cache"}, "PATH",
+        string_format("path to cache file for ngram-map-simple speculative decoding (default: %s)", params.speculative.ngram_map_simple.cache_file.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.speculative.ngram_map_simple.cache_file = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+
     //
     // removed params
     //

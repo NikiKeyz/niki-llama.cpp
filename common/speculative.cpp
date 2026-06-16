@@ -7,6 +7,7 @@
 #include "ngram-cache.h"
 #include "ngram-map.h"
 #include "ngram-mod.h"
+#include "ngram-map-simple.h"
 #include "sampling.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
@@ -30,7 +31,8 @@ const std::map<std::string, common_speculative_type> common_speculative_type_fro
     {"ngram-map-k",   COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K},
     {"ngram-map-k4v", COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V},
     {"ngram-mod",     COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
-    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}
+    {"ngram-cache",   COMMON_SPECULATIVE_TYPE_NGRAM_CACHE},
+    {"ngram-map-simple", COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE}
 };
 
 static std::string common_speculative_get_devices_str(const std::vector<ggml_backend_dev_t> & devices) {
@@ -1655,6 +1657,112 @@ struct common_speculative_impl_ngram_cache : public common_speculative_impl {
     }
 };
 
+struct common_speculative_impl_ngram_map_simple : public common_speculative_impl {
+    common_params_speculative_ngram_map_simple params;
+
+    uint16_t n_draft;
+
+    std::string path_cache;
+
+    common_ngram_map_simple * map;
+
+    // Track last prompt size to only add new tokens
+    size_t last_prompt_size;
+
+    common_speculative_impl_ngram_map_simple(
+            const common_params_speculative & params,
+            uint32_t n_seq)
+        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE, n_seq)
+        , params(params.ngram_map_simple)
+        , n_draft(params.ngram_map_simple.size_m)
+        , path_cache(params.ngram_map_simple.cache_file)
+        , last_prompt_size(0)
+    {
+        LOG_INF("%s: adding speculative implementation 'ngram-map-simple'\n", __func__);
+        LOG_INF("%s: - n_draft=%d, cache=%s\n", __func__,
+                n_draft,
+                path_cache.empty() ? "none" : path_cache.c_str());
+
+        // Load from cache file if specified
+        if (!path_cache.empty()) {
+            try {
+                map = common_ngram_map_simple_load(path_cache);
+                if (!map) {
+                    LOG_ERR("failed to open ngram-map-simple cache: %s", path_cache.c_str());
+                    map = common_ngram_map_simple_create(params.ngram_map_simple.size_n, params.ngram_map_simple.size_m);
+                }
+            } catch (...) {
+                LOG_ERR("failed to open ngram-map-simple cache: %s", path_cache.c_str());
+                map = common_ngram_map_simple_create(params.ngram_map_simple.size_n, params.ngram_map_simple.size_m);
+            }
+        } else {
+            map = common_ngram_map_simple_create(params.ngram_map_simple.size_n, params.ngram_map_simple.size_m);
+        }
+    }
+
+    ~common_speculative_impl_ngram_map_simple() override {
+        if (map) {
+            // Save to cache file if specified
+            if (!path_cache.empty()) {
+                try {
+                    common_ngram_map_simple_save(map, path_cache);
+                    LOG_INF("saved ngram-map-simple cache to %s\n", path_cache.c_str());
+                } catch (...) {
+                    LOG_WRN("failed to save ngram-map-simple cache: %s\n", path_cache.c_str());
+                }
+            }
+            common_ngram_map_simple_free(map);
+        }
+    }
+
+    void begin(llama_seq_id /*seq_id*/, const llama_tokens & prompt) override {
+        // Update last_prompt_size when a new prompt begins
+        last_prompt_size = prompt.size();
+    }
+
+    bool process(const llama_batch & /*batch*/) override {
+        // TODO: implement
+        return true;
+    }
+
+    void draft(common_speculative_draft_params_vec & dparams) override {
+        assert(dparams.size() == n_seq);
+
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            auto & dp = dparams[seq_id];
+            if (!dp.drafting) {
+                continue;
+            }
+
+            const auto & prompt = *dp.prompt;
+
+            // Only add new tokens to the map
+            if (prompt.size() > last_prompt_size && map) {
+                llama_tokens new_tokens(prompt.begin() + last_prompt_size, prompt.end());
+                common_ngram_map_simple_add(map, new_tokens);
+                last_prompt_size = prompt.size();
+            }
+
+            // Generate draft
+            if (map) {
+                *dp.result = common_ngram_map_simple_draft(
+                    map,
+                    prompt,
+                    dp.id_last,
+                    params.min_hits);
+            }
+        }
+    }
+
+    void accept(llama_seq_id /*seq_id*/, uint16_t /*n_accepted*/, bool /*is_other*/) override {
+        // noop
+    }
+
+    bool need_embd() const override {
+        return false;
+    }
+};
+
 struct common_speculative {
     common_speculative_draft_params_vec dparams;
 
@@ -1727,6 +1835,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
         case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V: return "ngram-map-k4v";
         case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:     return "ngram-mod";
         case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:   return "ngram-cache";
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE: return "ngram-map-simple";
         default:                                    return "unknown";
     }
 }
@@ -1791,6 +1900,9 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
             case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:
                 n_max = std::max(n_max, (int32_t) 8);
                 break;
+            case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE:
+                n_max = std::max(n_max, (int32_t) spec->ngram_map_simple.size_m);
+                break;
             case COMMON_SPECULATIVE_TYPE_NONE:
             case COMMON_SPECULATIVE_TYPE_COUNT:
                 break;
@@ -1819,9 +1931,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
         bool has_ngram_map_k   = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K));
         bool has_ngram_map_k4v = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V));
         bool has_ngram_mod     = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MOD));
+        bool has_ngram_map_simple = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE));
 
         // when adding a new type - update here the logic above
-        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 9);
+        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 10);
 
         // this list here defines the priority of the speculators
         // the one with highest priority are listed first
@@ -1841,6 +1954,9 @@ common_speculative * common_speculative_init(common_params_speculative & params,
         }
         if (has_ngram_cache) {
             configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_CACHE, params));
+        }
+        if (has_ngram_map_simple) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE, params));
         }
         if (has_draft_simple) {
             configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, params));
@@ -1912,6 +2028,12 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                         params.ngram_cache.lookup_cache_static,
                         params.ngram_cache.lookup_cache_dynamic);
                 impls.push_back(std::make_unique<common_speculative_impl_ngram_cache>(state));
+                break;
+            }
+            case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE: {
+                impls.push_back(
+                        std::make_unique<common_speculative_impl_ngram_map_simple>(
+                            config.params, n_seq));
                 break;
             }
             default:

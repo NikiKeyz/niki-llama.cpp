@@ -166,6 +166,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
     COMMON_SPECULATIVE_TYPE_NGRAM_CACHE,   // self-speculative decoding with 3-level n-gram cache
+    COMMON_SPECULATIVE_TYPE_NGRAM_MAP_SIMPLE, // self-speculative decoding with n-gram map and frequency tracking
     COMMON_SPECULATIVE_TYPE_COUNT          // number of types, unknown type
 };
 
@@ -344,6 +345,13 @@ struct common_params_speculative_ngram_cache {
     std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding
 };
 
+struct common_params_speculative_ngram_map_simple {
+    uint16_t size_n   = 8;  // ngram size for lookup
+    uint16_t size_m   = 16; // mgram size for speculative tokens
+    uint16_t min_hits = 1;  // minimum hits at ngram/mgram lookup for mgram to be proposed
+    std::string cache_file; // path to cache file for persistent storage
+};
+
 struct common_params_speculative {
     std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
 
@@ -356,6 +364,7 @@ struct common_params_speculative {
     common_params_speculative_ngram_map ngram_map_k4v;
 
     common_params_speculative_ngram_cache ngram_cache;
+    common_params_speculative_ngram_map_simple ngram_map_simple;
 
     bool has_dft() const {
         return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty();
