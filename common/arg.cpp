@@ -3814,6 +3814,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.ngram_mod.cache_file = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--spec-ngram-mod-v2"},
+        "use keyed ngram-mod hash table (eliminates false positives, more memory, no 25%% reset)",
+        [](common_params & params) {
+            params.speculative.ngram_mod.use_v2 = true;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
 
     add_opt(common_arg(
         {"--spec-ngram-simple-size-n"}, "N",

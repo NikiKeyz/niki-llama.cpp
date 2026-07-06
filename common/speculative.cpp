@@ -7,6 +7,7 @@
 #include "ngram-cache.h"
 #include "ngram-map.h"
 #include "ngram-mod.h"
+#include "ngram-mod-v2.h"
 #include "sampling.h"
 
 #include "../src/llama-ext.h" // staging API: llama_set_embeddings_nextn / llama_get_embeddings_nextn_ith (used by MTP)
@@ -2035,6 +2036,179 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
     }
 };
 
+struct common_speculative_impl_ngram_mod_v2 : public common_speculative_impl {
+    common_params_speculative_ngram_mod params;
+
+    common_ngram_mod_v2 mod;
+
+    const bool verbose;
+
+    struct seq_info {
+        size_t i_last = 0;
+        size_t n_draft_last = 0;
+        int n_accepted_last = 0;
+    };
+
+    std::vector<seq_info> sinfos;
+
+    common_speculative_impl_ngram_mod_v2(
+            const common_params_speculative & params,
+            uint32_t n_seq)
+        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_NGRAM_MOD, n_seq)
+        , params(params.ngram_mod)
+        , mod(params.ngram_mod.n_match, 4*1024*1024)
+        , verbose(std::getenv("LLAMA_TRACE") != nullptr) {
+        static_assert(sizeof(llama_token) == sizeof(common_ngram_mod_v2::entry_t));
+
+        LOG_INF("%s: adding speculative implementation 'ngram-mod' (v2)\n", __func__);
+        LOG_INF("%s: - n_match=%d, n_max=%d, n_min=%d\n", __func__,
+                this->params.n_match, this->params.n_max, this->params.n_min);
+        LOG_INF("%s: - mod size=%zu (%.3f MB)\n", __func__,
+                mod.size(), (float)(mod.size_bytes())/1024/1024);
+
+        if (this->params.n_match < 16) {
+            LOG_WRN("%s: ngram_mod n_match=%d is too small - poor quality is possible, "
+                    "see: https://github.com/ggml-org/llama.cpp/pull/19164\n", __func__, this->params.n_match);
+        }
+
+        if (!this->params.cache_file.empty()) {
+            LOG_INF("%s: loading ngram_mod cache from '%s'\n", __func__, this->params.cache_file.c_str());
+            if (mod.load(this->params.cache_file)) {
+                LOG_INF("%s: - loaded used=%zu/%zu (%.2f)\n", __func__, mod.get_used(), mod.size(), (double)mod.get_used()/(double)mod.size());
+            } else {
+                LOG_INF("%s: - no existing cache, starting fresh\n", __func__);
+            }
+        }
+
+        sinfos.resize(n_seq);
+    }
+
+    ~common_speculative_impl_ngram_mod_v2() override {
+        if (!params.cache_file.empty()) {
+            LOG_INF("%s: saving ngram_mod cache to '%s' (used=%zu/%zu)\n", __func__,
+                    params.cache_file.c_str(), mod.get_used(), mod.size());
+            if (!mod.save(params.cache_file)) {
+                LOG_WRN("%s: failed to save ngram_mod cache to '%s'\n", __func__, params.cache_file.c_str());
+            }
+        }
+    }
+
+    void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
+        auto & sinfo = sinfos[seq_id];
+
+        sinfo.i_last = 0;
+        sinfo.n_draft_last = 0;
+        sinfo.n_accepted_last = 0;
+
+        const size_t n = mod.get_n();
+        if (prompt.size() < n) {
+            return;
+        }
+
+        for (size_t i = 0; i < prompt.size() - n; ++i) {
+            mod.add(prompt.data() + i);
+        }
+
+        sinfo.i_last = prompt.size() - n;
+
+        const double f = (double)mod.get_used() / (double)mod.size();
+        LOG_INF("%s: ngram_mod occupancy = %zu/%zu (%.2f)\n", __func__, mod.get_used(), mod.size(), f);
+    }
+
+    void draft_one(
+            llama_seq_id seq_id,
+            common_speculative_draft_params & dparams) {
+        auto & sinfo = sinfos[seq_id];
+        auto & result = *dparams.result;
+
+        const auto & prompt = *dparams.prompt;
+
+        sinfo.n_draft_last = 0;
+
+        const size_t cur_len = prompt.size();
+        if (cur_len < mod.get_n()) {
+            return;
+        }
+
+        const size_t n = mod.get_n();
+
+        if (sinfo.i_last + 32 < cur_len) {
+            for (size_t i = sinfo.i_last; i < cur_len - n; ++i) {
+                mod.add(prompt.data() + i);
+            }
+
+            sinfo.i_last = cur_len - n;
+        }
+
+        const int n_prev = sinfo.n_accepted_last;
+        const int n_draft_target = (n_prev > 0)
+            ? std::max(params.n_min, std::min((int)std::ceil(n_prev * 1.5), params.n_max))
+            : params.n_min;
+        const int n_max_eff = n_draft_target;
+        const int n_min_eff = params.n_min;
+
+        result.resize(n + n_max_eff);
+        for (size_t i = 0; i < n - 1; ++i) {
+            result[i] = prompt.at(cur_len - n + 1 + i);
+        }
+        result[n - 1] = dparams.id_last;
+
+        for (int i = 0; i < n_max_eff; ++i) {
+            const llama_token token = mod.get(result.data() + i);
+            if (token == common_ngram_mod_v2::EMPTY) {
+                if (i < n_min_eff) {
+                    result.clear();
+                    return;
+                }
+
+                result.resize(n + i);
+                break;
+            }
+            result[n + i] = token;
+        }
+
+        for (size_t i = 0; n + i < result.size(); ++i) {
+            result[i] = result[n + i];
+        }
+        result.resize(result.size() - n);
+
+        sinfo.n_draft_last = result.size();
+    }
+
+    bool process(const llama_batch & /*batch*/) override {
+        return true;
+    }
+
+    void draft(common_speculative_draft_params_vec & dparams) override {
+        assert(dparams.size() == n_seq);
+
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            auto & dp = dparams[seq_id];
+            if (!dp.drafting) {
+                continue;
+            }
+
+            draft_one(seq_id, dp);
+        }
+    }
+
+    void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) override {
+        if (is_other) {
+            return;
+        }
+
+        auto & sinfo = sinfos[seq_id];
+
+        if (sinfo.n_draft_last > 0) {
+            sinfo.n_accepted_last = n_accepted;
+        }
+    }
+
+    bool need_embd() const override {
+        return false;
+    }
+};
+
 struct common_speculative_impl_ngram_cache : public common_speculative_impl {
     common_params_speculative_ngram_cache params;
 
@@ -2435,8 +2609,13 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_NGRAM_MOD: {
-                impls.push_back(
-                        std::make_unique<common_speculative_impl_ngram_mod>(config.params, n_seq));
+                if (config.params.ngram_mod.use_v2) {
+                    impls.push_back(
+                            std::make_unique<common_speculative_impl_ngram_mod_v2>(config.params, n_seq));
+                } else {
+                    impls.push_back(
+                            std::make_unique<common_speculative_impl_ngram_mod>(config.params, n_seq));
+                }
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE: {
