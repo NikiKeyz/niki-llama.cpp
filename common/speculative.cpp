@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
+#include <optional>
 #include <iomanip>
 #include <map>
 #include <cinttypes>
@@ -1940,9 +1942,11 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         }
 
         // compute adaptive draft length based on acceptance EMA
-        const int n_draft_target = std::max(4, (int)(params.n_max * sinfo.acceptance_ema));
+        // non-linear mapping: pow(ema, 1.5) squeezes harder at low acceptance
+        const double ema_pow = std::pow(sinfo.acceptance_ema, 1.5);
+        const int n_draft_target = std::max(4, (int)(params.n_max * ema_pow));
         const int n_max_eff = std::min(n_draft_target, params.n_max);
-        const int n_min_eff = std::max(1, (int)((double)params.n_min * ((double)n_max_eff / (double)params.n_max)));
+        const int n_min_eff = std::max(1, (int)((double)params.n_min * ema_pow));
 
         result.resize(n + n_max_eff);
         for (size_t i = 0; i < n - 1; ++i) {
@@ -2005,16 +2009,15 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
             // update exponential moving average of acceptance rate
             // adaptive alpha: react faster when acceptance drops, smoother when stable
-            const double alpha = 0.1 + 0.3 * (1.0 - f_acc);
+            const double alpha = 0.1 + 0.5 * (1.0 - f_acc);
             sinfo.acceptance_ema = alpha * f_acc + (1.0 - alpha) * sinfo.acceptance_ema;
 
             if (f_acc < 0.25) {
                 sinfo.n_low++;
                 if (sinfo.n_low >= 5) {
-                    LOG_WRN("%s: low acceptance streak (%d) - would reset ngram_mod (used=%zu) [disabled]\n", __func__, sinfo.n_low, mod.get_used());
+                    LOG_DBG("%s: low acceptance streak (%d) - ngram_mod holding (used=%zu, ema=%.2f)\n", __func__, sinfo.n_low, mod.get_used(), sinfo.acceptance_ema);
 
                     sinfo.n_low = 0;
-                    sinfo.acceptance_ema = 0.5;
                 }
             } else {
                 sinfo.n_low = 0;
@@ -2693,6 +2696,14 @@ void common_speculative_print_stats(const common_speculative * spec) {
             oss << std::fixed << std::setprecision(3) << impl->t_accept_us / 1000.0 << ", ";
             oss << std::fixed << std::setprecision(3) << impl->t_verify_us / 1000.0;
             str_perf = ", dur(b,g,a,v) = " + oss.str() + " ms";
+
+            const double t_work_ms = (impl->t_draft_us + impl->t_accept_us + impl->t_verify_us) / 1000.0;
+            const size_t n_total = impl->n_gen_drafts + impl->n_acc_tokens;
+            if (n_total > 0) {
+                std::ostringstream oss2;
+                oss2 << std::fixed << std::setprecision(2) << t_work_ms / n_total;
+                str_perf += ", ms/tok = " + oss2.str();
+            }
         } else {
             str_perf = "";
         }
@@ -2724,4 +2735,23 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 str_stats.c_str(),
                 str_perf.c_str());
     }
+}
+
+std::optional<double> common_speculative_get_ema_acceptance(
+        const common_speculative * spec,
+        uint32_t seq_id) {
+    if (!spec) {
+        return std::nullopt;
+    }
+
+    for (const auto & impl : spec->impls) {
+        if (impl->type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD) {
+            auto * ng = static_cast<common_speculative_impl_ngram_mod *>(impl.get());
+            if (seq_id < ng->sinfos.size()) {
+                return ng->sinfos[seq_id].acceptance_ema;
+            }
+        }
+    }
+
+    return std::nullopt;
 }

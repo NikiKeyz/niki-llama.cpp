@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
+#include <optional>
 #include <exception>
 #include <memory>
 #include <filesystem>
@@ -573,7 +574,15 @@ struct server_slot {
         t_print_last = t_now;
         n_decoded_last = n_decoded;
 
-        SLT_INF(*this, "n_decoded = %6d, tg = %6.2f t/s, tg_3s = %6.2f t/s\n", n_decoded, n_gen_second, n_gen_second_win);
+        std::string ema_str;
+        auto ema = common_speculative_get_ema_acceptance(spec, id);
+        if (ema.has_value()) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), ", ema = %.2f", ema.value());
+            ema_str = buf;
+        }
+
+        SLT_INF(*this, "n_decoded = %6d, tg = %6.2f t/s, tg_3s = %6.2f t/s%s\n", n_decoded, n_gen_second, n_gen_second_win, ema_str.c_str());
     }
 
     void print_timings_pp() const {
