@@ -3614,6 +3614,31 @@ private:
             n_empty_consecutive = 0;
         }
 
+        int32_t i_next = 0;
+
+        // detect speculative verification slots
+        std::vector<llama_seq_id> spec_slots;
+        for (const auto & slot : slots) {
+            if (slot.state == SLOT_STATE_GENERATING && slot.can_speculate() && !slot.spec_draft.empty()) {
+                spec_slots.push_back(slot.id);
+            }
+        }
+        const int64_t t_start_verify = !spec_slots.empty() ? ggml_time_us() : -1;
+
+        // process the created batch of tokens
+        for (int32_t i = 0; i < batch.n_tokens; i = i_next) {
+            const int32_t n_tokens = std::min(n_batch, batch.n_tokens - i);
+
+            llama_batch batch_view = {
+                n_tokens,
+                batch.token    + i,
+                nullptr,
+                batch.pos      + i,
+                batch.n_seq_id + i,
+                batch.seq_id   + i,
+                batch.logits   + i,
+            };
+
         const int ret = llama_decode(ctx_tgt, batch_view);
 
         metrics.on_decoded(slots);
@@ -3942,8 +3967,18 @@ private:
 
             slot.print_timings_tg();
 
-            SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
-        });
+                SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
+            }
+        }
+
+        if (t_start_verify > 0) {
+            const int64_t dt = ggml_time_us() - t_start_verify;
+            for (const auto & sid : spec_slots) {
+                common_speculative_add_verify_time(spec.get(), sid, dt);
+            }
+        }
+
+        SRV_DBG("%s", "run slots completed\n");
     }
 
     int get_slot_n_ctx() {
