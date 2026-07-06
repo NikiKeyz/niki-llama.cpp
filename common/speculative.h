@@ -82,9 +82,6 @@ void common_speculative_add_verify_time(common_speculative * spec, llama_seq_id 
 // print statistics about the speculative decoding
 void common_speculative_print_stats(const common_speculative * spec);
 
-// get the current acceptance EMA for ngram-mod (if available)
-std::optional<double> common_speculative_get_ema_acceptance(const common_speculative * spec, uint32_t seq_id);
-
 struct common_speculative_deleter {
     void operator()(common_speculative * s) { common_speculative_free(s); }
 };

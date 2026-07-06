@@ -1825,12 +1825,8 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         // length of the last drafted n-gram (number of tokens returned by draft)
         size_t n_draft_last = 0;
 
-        // consecutive accept rounds with low acceptance fraction (< 0.5)
-        int n_low = 0;
-
-        // exponential moving average of acceptance rate
-        // used to adaptively scale draft length
-        double acceptance_ema = 0.5;
+        // number of tokens accepted from the last draft
+        int n_accepted_last = 0;
     };
 
     std::vector<seq_info> sinfos;
@@ -1891,7 +1887,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         sinfo.i_last = 0;
         sinfo.n_draft_last = 0;
-        sinfo.acceptance_ema = 0.5;
+        sinfo.n_accepted_last = 0;
 
         const size_t n = mod.get_n();
         if (prompt.size() < n) {
@@ -1941,12 +1937,13 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             sinfo.i_last = cur_len - n;
         }
 
-        // compute adaptive draft length based on acceptance EMA
-        // non-linear mapping: pow(ema, 2) squeezes harder at low acceptance
-        const double ema_pow = std::pow(sinfo.acceptance_ema, 2);
-        const int n_draft_target = std::max(params.n_min, (int)(params.n_max * ema_pow));
-        const int n_max_eff = std::min(n_draft_target, params.n_max);
-        const int n_min_eff = std::max(1, (int)((double)params.n_min * ema_pow));
+        // compute adaptive draft length based on number of accepted tokens from last draft
+        const int n_prev = sinfo.n_accepted_last;
+        const int n_draft_target = (n_prev > 0)
+            ? std::max(params.n_min, std::min((int)std::ceil(n_prev * 1.67), params.n_max))
+            : params.n_min;
+        const int n_max_eff = n_draft_target;
+        const int n_min_eff = params.n_min;
 
         result.resize(n + n_max_eff);
         for (size_t i = 0; i < n - 1; ++i) {
@@ -2003,25 +2000,8 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         auto & sinfo = sinfos[seq_id];
 
-        // compute acceptance fraction if we have a recorded draft length
         if (sinfo.n_draft_last > 0) {
-            const double f_acc = (double)n_accepted / (double)sinfo.n_draft_last;
-
-            // update exponential moving average of acceptance rate
-            // adaptive alpha: react faster when acceptance drops, smoother when stable
-            const double alpha = 0.1 + 0.6 * (1.0 - f_acc);
-            sinfo.acceptance_ema = alpha * f_acc + (1.0 - alpha) * sinfo.acceptance_ema;
-
-            if (f_acc < 0.25) {
-                sinfo.n_low++;
-                if (sinfo.n_low >= 5) {
-                    LOG_DBG("%s: low acceptance streak (%d) - ngram_mod holding (used=%zu, ema=%.2f)\n", __func__, sinfo.n_low, mod.get_used(), sinfo.acceptance_ema);
-
-                    sinfo.n_low = 0;
-                }
-            } else {
-                sinfo.n_low = 0;
-            }
+            sinfo.n_accepted_last = n_accepted;
         }
     }
 
@@ -2735,23 +2715,4 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 str_stats.c_str(),
                 str_perf.c_str());
     }
-}
-
-std::optional<double> common_speculative_get_ema_acceptance(
-        const common_speculative * spec,
-        uint32_t seq_id) {
-    if (!spec) {
-        return std::nullopt;
-    }
-
-    for (const auto & impl : spec->impls) {
-        if (impl->type == COMMON_SPECULATIVE_TYPE_NGRAM_MOD) {
-            auto * ng = static_cast<common_speculative_impl_ngram_mod *>(impl.get());
-            if (seq_id < ng->sinfos.size()) {
-                return ng->sinfos[seq_id].acceptance_ema;
-            }
-        }
-    }
-
-    return std::nullopt;
 }
