@@ -3624,7 +3624,7 @@ private:
                 spec_slots.push_back(slot.id);
             }
         }
-        int64_t t_verify_acc = 0;
+        const int64_t t_start_verify = !spec_slots.empty() ? ggml_time_us() : -1;
 
         // process the created batch of tokens
         for (int32_t i = 0; i < batch.n_tokens; i = i_next) {
@@ -3984,6 +3984,13 @@ private:
             slot.print_timings_tg();
 
                 SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
+            }
+        }
+
+        if (t_start_verify > 0) {
+            const int64_t dt = ggml_time_us() - t_start_verify;
+            for (const auto & sid : spec_slots) {
+                common_speculative_add_verify_time(spec.get(), sid, dt);
             }
         }
 
