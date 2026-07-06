@@ -3807,6 +3807,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.ngram_mod.n_match = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-ngram-mod-file"}, "FNAME",
+        "path to persist the ngram-mod hash table across sessions (empty = no persistence)",
+        [](common_params & params, const std::string & value) {
+            params.speculative.ngram_mod.cache_file = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER}));
 
     add_opt(common_arg(
         {"--spec-ngram-simple-size-n"}, "N",

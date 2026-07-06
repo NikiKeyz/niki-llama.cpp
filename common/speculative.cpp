@@ -1825,6 +1825,10 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         // consecutive accept rounds with low acceptance fraction (< 0.5)
         int n_low = 0;
+
+        // exponential moving average of acceptance rate
+        // used to adaptively scale draft length
+        double acceptance_ema = 0.5;
     };
 
     std::vector<seq_info> sinfos;
@@ -1849,7 +1853,35 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
                     "see: https://github.com/ggml-org/llama.cpp/pull/19164\n", this->params.n_match);
         }
 
+        if (!this->params.cache_file.empty()) {
+            LOG_INF("%s: loading ngram_mod cache from '%s'\n", __func__, this->params.cache_file.c_str());
+            if (mod.load(this->params.cache_file)) {
+                LOG_INF("%s: - loaded used=%zu/%zu (%.2f)\n", __func__, mod.get_used(), mod.size(), (double)mod.get_used()/(double)mod.size());
+            } else {
+                LOG_INF("%s: - no existing cache, starting fresh\n", __func__);
+            }
+        }
+
+        if (!this->params.cache_file.empty()) {
+            LOG_INF("%s: loading ngram_mod cache from '%s'\n", __func__, this->params.cache_file.c_str());
+            if (mod.load(this->params.cache_file)) {
+                LOG_INF("%s: - loaded used=%zu/%zu (%.2f)\n", __func__, mod.get_used(), mod.size(), (double)mod.get_used()/(double)mod.size());
+            } else {
+                LOG_INF("%s: - no existing cache, starting fresh\n", __func__);
+            }
+        }
+
         sinfos.resize(n_seq);
+    }
+
+    ~common_speculative_impl_ngram_mod() override {
+        if (!params.cache_file.empty()) {
+            LOG_INF("%s: saving ngram_mod cache to '%s' (used=%zu/%zu)\n", __func__,
+                    params.cache_file.c_str(), mod.get_used(), mod.size());
+            if (!mod.save(params.cache_file)) {
+                LOG_WRN("%s: failed to save ngram_mod cache to '%s'\n", __func__, params.cache_file.c_str());
+            }
+        }
     }
 
     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
@@ -1857,6 +1889,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
         sinfo.i_last = 0;
         sinfo.n_draft_last = 0;
+        sinfo.acceptance_ema = 0.5;
 
         const size_t n = mod.get_n();
         if (prompt.size() < n) {
@@ -1906,16 +1939,21 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
             sinfo.i_last = cur_len - n;
         }
 
-        result.resize(n + params.n_max);
+        // compute adaptive draft length based on acceptance EMA
+        const int n_draft_target = std::max(4, (int)(params.n_max * sinfo.acceptance_ema));
+        const int n_max_eff = std::min(n_draft_target, params.n_max);
+        const int n_min_eff = std::max(1, (int)((double)params.n_min * ((double)n_max_eff / (double)params.n_max)));
+
+        result.resize(n + n_max_eff);
         for (size_t i = 0; i < n - 1; ++i) {
             result[i] = prompt.at(cur_len - n + 1 + i);
         }
         result[n - 1] = dparams.id_last;
 
-        for (int i = 0; i < params.n_max; ++i) {
+        for (int i = 0; i < n_max_eff; ++i) {
             const llama_token token = mod.get(result.data() + i);
             if (token == common_ngram_mod::EMPTY) {
-                if (i < params.n_min) {
+                if (i < n_min_eff) {
                     result.clear();
                     return;
                 }
@@ -1964,16 +2002,19 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         // compute acceptance fraction if we have a recorded draft length
         if (sinfo.n_draft_last > 0) {
             const double f_acc = (double)n_accepted / (double)sinfo.n_draft_last;
+
+            // update exponential moving average of acceptance rate
+            // adaptive alpha: react faster when acceptance drops, smoother when stable
+            const double alpha = 0.1 + 0.3 * (1.0 - f_acc);
+            sinfo.acceptance_ema = alpha * f_acc + (1.0 - alpha) * sinfo.acceptance_ema;
+
             if (f_acc < 0.25) {
                 sinfo.n_low++;
                 if (sinfo.n_low >= 5) {
-                    if (verbose) {
-                        SPC_TRC("low acceptance streak (%d) - resetting ngram_mod\n", sinfo.n_low);
-                    }
+                    LOG_WRN("%s: low acceptance streak (%d) - would reset ngram_mod (used=%zu) [disabled]\n", __func__, sinfo.n_low, mod.get_used());
 
-                    mod.reset();
                     sinfo.n_low = 0;
-                    sinfo.i_last = 0;
+                    sinfo.acceptance_ema = 0.5;
                 }
             } else {
                 sinfo.n_low = 0;

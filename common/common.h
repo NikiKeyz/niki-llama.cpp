@@ -353,6 +353,8 @@ struct common_params_speculative_ngram_mod {
 
     int32_t n_max = 64;
     int32_t n_min = 48;
+
+    std::string cache_file; // path to persist the hash table across sessions (empty = no persistence)
 };
 
 struct common_params_speculative_ngram_map {
