@@ -1942,9 +1942,9 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
         }
 
         // compute adaptive draft length based on acceptance EMA
-        // non-linear mapping: pow(ema, 1.5) squeezes harder at low acceptance
-        const double ema_pow = std::pow(sinfo.acceptance_ema, 1.5);
-        const int n_draft_target = std::max(4, (int)(params.n_max * ema_pow));
+        // non-linear mapping: pow(ema, 2) squeezes harder at low acceptance
+        const double ema_pow = std::pow(sinfo.acceptance_ema, 2);
+        const int n_draft_target = std::max(params.n_min, (int)(params.n_max * ema_pow));
         const int n_max_eff = std::min(n_draft_target, params.n_max);
         const int n_min_eff = std::max(1, (int)((double)params.n_min * ema_pow));
 
@@ -2009,7 +2009,7 @@ struct common_speculative_impl_ngram_mod : public common_speculative_impl {
 
             // update exponential moving average of acceptance rate
             // adaptive alpha: react faster when acceptance drops, smoother when stable
-            const double alpha = 0.1 + 0.5 * (1.0 - f_acc);
+            const double alpha = 0.1 + 0.6 * (1.0 - f_acc);
             sinfo.acceptance_ema = alpha * f_acc + (1.0 - alpha) * sinfo.acceptance_ema;
 
             if (f_acc < 0.25) {
