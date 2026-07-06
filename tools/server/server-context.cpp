@@ -3623,7 +3623,7 @@ private:
                 spec_slots.push_back(slot.id);
             }
         }
-        const int64_t t_start_verify = !spec_slots.empty() ? ggml_time_us() : -1;
+        int64_t t_verify_acc = 0;
 
         // process the created batch of tokens
         for (int32_t i = 0; i < batch.n_tokens; i = i_next) {
@@ -3638,6 +3638,8 @@ private:
                 batch.seq_id   + i,
                 batch.logits   + i,
             };
+
+            const int64_t t_v_start = !spec_slots.empty() ? ggml_time_us() : -1;
 
         const int ret = llama_decode(ctx_tgt, batch_view);
 
@@ -3699,6 +3701,19 @@ private:
         if (!common_speculative_process(spec.get(), batch_view)) {
             SRV_ERR("%s", "failed to process speculative batch\n");
 
+                // TODO: handle error
+                break;
+            }
+
+            if (t_v_start > 0) {
+                t_verify_acc += ggml_time_us() - t_v_start;
+            }
+
+            // move the head of the batch forward with the number of tokens we just processed
+            i_next = i + n_tokens;
+
+            // on successful decode, restore the original batch size
+            n_batch = llama_n_batch(ctx_tgt);
             // TODO: handle error
             throw std::runtime_error("failed to process speculative batch");
         }
@@ -3971,10 +3986,9 @@ private:
             }
         }
 
-        if (t_start_verify > 0) {
-            const int64_t dt = ggml_time_us() - t_start_verify;
+        if (t_verify_acc > 0) {
             for (const auto & sid : spec_slots) {
-                common_speculative_add_verify_time(spec.get(), sid, dt);
+                common_speculative_add_verify_time(spec.get(), sid, t_verify_acc);
             }
         }
 
