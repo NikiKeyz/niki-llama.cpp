@@ -3624,7 +3624,7 @@ private:
                 spec_slots.push_back(slot.id);
             }
         }
-        const int64_t t_start_verify = !spec_slots.empty() ? ggml_time_us() : -1;
+        int64_t t_verify_acc = 0;
 
         // process the created batch of tokens
         for (int32_t i = 0; i < batch.n_tokens; i = i_next) {
@@ -3704,6 +3704,10 @@ private:
 
                 // TODO: handle error
                 break;
+            }
+
+            if (t_v_start > 0) {
+                t_verify_acc += ggml_time_us() - t_v_start;
             }
 
             if (t_v_start > 0) {
@@ -3987,10 +3991,15 @@ private:
             }
         }
 
-        if (t_start_verify > 0) {
-            const int64_t dt = ggml_time_us() - t_start_verify;
+        if (t_verify_acc > 0) {
             for (const auto & sid : spec_slots) {
-                common_speculative_add_verify_time(spec.get(), sid, dt);
+                common_speculative_add_verify_time(spec.get(), sid, t_verify_acc);
+            }
+        }
+
+        if (t_verify_acc > 0) {
+            for (const auto & sid : spec_slots) {
+                common_speculative_add_verify_time(spec.get(), sid, t_verify_acc);
             }
         }
 
