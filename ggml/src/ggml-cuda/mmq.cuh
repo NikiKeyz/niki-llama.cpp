@@ -1107,9 +1107,9 @@ static __device__ __forceinline__ void ggml_cuda_mmq_process_nvfp4_tiles(
 
     constexpr ggml_cuda_mmq_write_back_t write_back = ggml_cuda_mmq_write_back_mma<GGML_TYPE_NVFP4, J, fallback>;
     if (fixup) {
-        write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), I, I, J);
+        write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), nullptr, I, I, J);
     } else {
-        write_back(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+        write_back(sum, ids_dst, dst, nullptr, stride_col_dst, tile_x_max_i, tile_y_max_j);
     }
 }
 
@@ -1164,9 +1164,9 @@ static __device__ __forceinline__ void ggml_cuda_mmq_process_mxfp6_e2m3_tiles(
             constexpr ggml_cuda_mmq_write_back_t write_back_checked =
                 ggml_cuda_mmq_write_back_mma<GGML_TYPE_MXFP6_E2M3, J, true>;
             if (fixup) {
-                write_back_checked(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), I, I, J);
+                write_back_checked(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), nullptr, I, I, J);
             } else {
-                write_back_checked(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+                write_back_checked(sum, ids_dst, dst, nullptr, stride_col_dst, tile_x_max_i, tile_y_max_j);
             }
             return;
         }
@@ -1197,9 +1197,9 @@ static __device__ __forceinline__ void ggml_cuda_mmq_process_mxfp6_e2m3_tiles(
 
     constexpr ggml_cuda_mmq_write_back_t write_back = ggml_cuda_mmq_write_back_mma<GGML_TYPE_MXFP6_E2M3, J, fallback>;
     if (fixup) {
-        write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), I, I, J);
+        write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(J*I), nullptr, I, I, J);
     } else {
-        write_back(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
+        write_back(sum, ids_dst, dst, nullptr, stride_col_dst, tile_x_max_i, tile_y_max_j);
     }
 }
 #endif // defined(BLACKWELL_MMA_AVAILABLE)
