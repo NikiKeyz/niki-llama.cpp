@@ -12,6 +12,10 @@
 
 LLM inference in C/C++
 
+## Changes in this repo
+
+[Niki's speculative decoding enhancements](./docs/niki-speculative.md): ngram-mod-v2 (persistent cache, ~1.5x speedup), skip MTP, draft p-min fix, plus Michael Wand's NVFP4 repack + MXFP6 CUDA
+
 ## Recent API changes
 
 - [Changelog for `libllama` API](https://github.com/ggml-org/llama.cpp/issues/9289)
