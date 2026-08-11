@@ -1,3 +1,41 @@
+# Changes in this repo
+
+[Niki's speculative decoding enhancements](./docs/niki-speculative.md): ngram-mod-v2 (persistent cache, ~1.5x speedup on top of MTP), skip MTP's useless double work with ngram-mod, draft p-min fix, plus [Michael Wand's NVFP4 repack + MXFP6 CUDA](https://github.com/michaelw9999/llama.cpp/tree/nvfp4repack_mxfp6_cuda)
+
+## From real log (lucky turn)
+
+*With MTP only I get **20-25 t/s** max on this context length*
+```
+n_decoded =    112, tg =  30.34 t/s, tg_3s =  30.34 t/s
+n_decoded =    508, tg =  73.93 t/s, tg_3s = 124.54 t/s
+n_decoded =    623, tg =  62.82 t/s, tg_3s =  37.75 t/s
+n_decoded =    815, tg =  62.73 t/s, tg_3s =  62.44 t/s
+n_decoded =   1003, tg =  62.36 t/s, tg_3s =  60.80 t/s
+eval time =   17088.28 ms /  1024 tokens (   16.69 ms per token,    59.92 tokens per second)
+draft acceptance = 0.71538 (  935 accepted /  1307 generated), mean len = 11.39
+```
+Agentic session overall:
+```
+ngram-mod: #calls(b,g,a) =   24   1566    534, #gen drafts =    534, #acc drafts =   492, #gen tokens =   9262, #acc tokens =  6469, #mean acc len = 13.11, #acc rate/pos = (0.921, 0.852, 0.783, 0.609, 0.571, ...), dur(b,g,a,v) = 453.725, 12.188, 0.461, 54275.707 ms, ms/tok = 7.75
+draft-mtp: #calls(b,g,a) =   24   1566   1032, #gen drafts =   1032, #acc drafts =   766, #gen tokens =   2813, #acc tokens =  2245, #mean acc len = 3.18, #acc rate/pos = (0.742, 0.503, 0.390, 0.296, 0.245), dur(b,g,a,v) = 0.157, 16147.690, 1.470, 63853.642 ms, ms/tok = 24.41, #cold_start = 121, #cs_tokens = 121, #cs_rejected = 88
+```
+
+That was code refactoring session. For other use cases results are not so impressive, but still.
+
+Parameters:
+
+```
+--spec-type ngram-mod,draft-mtp \
+--spec-ngram-mod-v2 \
+--spec-ngram-mod-n-match 12 \
+--spec-ngram-mod-n-min 3 \
+--spec-ngram-mod-n-max 108 \
+--spec-ngram-mod-file /path/to/ngram-mod-cache.bin \
+--spec-draft-n-min 1 \
+--spec-draft-n-max 5 \
+--spec-draft-p-min 0.8
+```
+
 # llama.cpp
 
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
@@ -11,10 +49,6 @@
 [Manifesto](https://github.com/ggml-org/llama.cpp/discussions/205) / [ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/issues?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Abartowski1182%20OR%20author%3Ahipudding%20OR%20author%3AServeurpersoCom%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3A0cc4m%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3Aallozaur%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Alhez%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming)%20sort%3Aupdated-desc)
 
 LLM inference in C/C++
-
-## Changes in this repo
-
-[Niki's speculative decoding enhancements](./docs/niki-speculative.md): ngram-mod-v2 (persistent cache, ~1.5x speedup), skip MTP, draft p-min fix, plus Michael Wand's NVFP4 repack + MXFP6 CUDA
 
 ## Recent API changes
 
